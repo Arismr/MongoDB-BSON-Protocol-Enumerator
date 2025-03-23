@@ -1,5 +1,6 @@
-
-  #  MongoDB BSON Protocol Enumerator
+![MongoDB Enumerator Banner](assets/banner.png)
+ 
+ #  MongoDB BSON Protocol Enumerator
 
 This script is a **minimal, low-level MongoDB enumeration tool** that connects directly to a MongoDB server and communicates using the **raw wire protocol** over sockets and **BSON-encoded queries** — without using pymongo or official drivers.
 
