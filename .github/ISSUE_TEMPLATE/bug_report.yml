@@ -1,0 +1,36 @@
+name: Bug Report
+description: File a detailed bug report to help us improve.
+title: "[BUG] <describe the issue>"
+labels: [bug]
+assignees: [Arismr]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Please fill out this form to report a bug.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the Bug
+      description: A clear and concise description of what went wrong.
+      placeholder: Describe the issue...
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: How can we reproduce this bug?
+      placeholder: |
+        1. Run this command
+        2. See this error
+    validations:
+      required: true
+
+  - type: input
+    id: system-info
+    attributes:
+      label: System Info
+      placeholder: Ubuntu 22.04, Python 3.10, etc.
