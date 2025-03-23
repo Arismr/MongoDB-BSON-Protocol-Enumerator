@@ -1,4 +1,4 @@
-![MongoDB Enumerator Banner](assets/banner.png)
+
  
  #  MongoDB BSON Protocol Enumerator
 
